@@ -7,6 +7,8 @@ import random
 import json
 import yaml
 from pathlib import Path
+import torch
+import torch.nn as nn
 
 from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
@@ -25,6 +27,222 @@ from flightsim.sensors.stereo_utils import StereoUtils
 from proj3.code.se3_control import SE3Control
 from proj3.code.world_traj import WorldTraj
 #######################################################################
+
+class RotorEffectivenessPredictor(nn.Module):
+    """
+    Predicts effectiveness per rotor
+    """
+    def __init__(self, n_channels=6, hidden_size=128, lstm_layers=2, dropout=0.3):
+        super().__init__()
+
+        self.conv = nn.Sequential(
+            nn.Conv1d(n_channels, 64, kernel_size=5, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm1d(256),
+            nn.ReLU()
+        )
+
+        self.lstm = nn.LSTM(
+            input_size=256,
+            hidden_size=128,
+            num_layers=lstm_layers,
+            batch_first=True,
+            dropout=dropout if lstm_layers > 1 else 0,
+            bidirectional=True
+        )
+
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size * 2, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 4)
+        )
+
+    def forward(self, x):
+        x = x.permute(0, 2, 1)
+        cnn_out = self.conv(x)
+        cnn_out = cnn_out.transpose(1, 2)
+        lstm_out, _ = self.lstm(cnn_out)
+        last_hidden = lstm_out.mean(dim=1)
+        out = self.fc(last_hidden)
+        return out
+
+
+class RotorEffectivenessPredictor2(nn.Module):
+    def __init__(self, n_channels=6, hidden_size=128, lstm_layers=2, dropout=0.3):
+        super().__init__()
+
+        self.conv = nn.Sequential(
+            nn.Conv1d(n_channels, 64, kernel_size=5, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+
+            nn.Conv1d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm1d(256),
+            nn.ReLU()
+        )
+
+        self.lstm = nn.LSTM(
+            input_size=256,
+            hidden_size=128,
+            num_layers=lstm_layers,
+            batch_first=True,
+            dropout=dropout if lstm_layers > 1 else 0,
+            bidirectional=False
+        )
+
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 4)
+        )
+
+    def forward(self, x, hc=None):
+        x = x.permute(0, 2, 1)
+        cnn_out = self.conv(x)
+        cnn_out = cnn_out.transpose(1, 2)
+
+        if hc is None:
+            lstm_out, _ = self.lstm(cnn_out)
+        else:
+            lstm_out, hc = self.lstm(cnn_out, hc)
+
+        last_hidden = lstm_out[:, -1, :]
+        out = self.fc(last_hidden)
+        return out
+
+
+class BinaryFaultClassifier(nn.Module):
+    def __init__(self, n_channels=6, hidden_size=128, lstm_layers=2, dropout=0.3):
+        super().__init__()
+
+        self.conv = nn.Sequential(
+            nn.Conv1d(n_channels, 64, kernel_size=5, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.Conv1d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm1d(256),
+            nn.ReLU()
+        )
+
+        # self.lstm = nn.LSTM(
+        #     input_size=128,
+        #     hidden_size=hidden_size,
+        #     num_layers=lstm_layers,
+        #     batch_first=True,
+        #     dropout=dropout if lstm_layers > 1 else 0,
+        # )
+
+        self.lstm = nn.LSTM(
+            input_size=256,
+            hidden_size=128,
+            num_layers=lstm_layers,
+            batch_first=True,
+            dropout=dropout if lstm_layers > 1 else 0,
+            bidirectional=True
+        )
+
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_size * 2, 128),
+            # nn.Linear(hidden_size, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1)
+        )
+
+        self.attn = nn.Sequential(
+            nn.Linear(hidden_size * 2, 128),
+            nn.Tanh(),
+            nn.Linear(128, 1),
+            nn.Softmax(dim=1)
+        )
+
+    def forward(self, x):
+        x = x.permute(0, 2, 1)
+        # x = x.transpose(1, 2)
+        cnn_out = self.conv(x)
+        cnn_out = cnn_out.transpose(1, 2)
+        lstm_out, _ = self.lstm(cnn_out)
+        # weights = self.attn(lstm_out)
+        # context = (lstm_out * weights).sum(dim=1)
+        # out = self.fc(context)
+        # last_hidden = lstm_out[:, -1, :]
+        last_hidden = lstm_out.mean(dim=1)
+        out = self.fc(last_hidden)
+        return out.squeeze(1)
+
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Regression model
+# model = RotorEffectivenessPredictor().to(DEVICE)
+# model.load_state_dict(torch.load("best_model.pt", map_location=DEVICE))
+# model.eval()
+
+# Regression model - Unidirectional
+model = RotorEffectivenessPredictor2().to(DEVICE)
+model.load_state_dict(torch.load("best_model2.pt", map_location=DEVICE))
+model.eval()
+
+# Binary model
+# model = BinaryFaultClassifier().to(DEVICE)
+# model.load_state_dict(torch.load("best_binary_model.pt", map_location=DEVICE))
+# model.eval()
+# -----------------------------
+WINDOW_LEN = 100
+imu_buffer = []      # will store last 100 IMU readings
+predictions = []     # list of (time, predicted effectiveness vector)
+inference_times = [] # list of inference timing results
+
+print("Model loaded and ready for inference!")
+
+def process_imu_and_predict(curr_time, imu_sample):
+    imu_buffer.append(imu_sample)
+
+    if len(imu_buffer) > WINDOW_LEN:
+        imu_buffer.pop(0)
+
+    # Run prediction only when window is full
+    if len(imu_buffer) == WINDOW_LEN:
+        imu_window = np.array(imu_buffer, dtype=np.float32)
+
+        # (1, W, 6) tensor
+        x = torch.tensor(imu_window, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+
+        start = time.perf_counter()
+        with torch.inference_mode():
+            pred = model(x).cpu().numpy()[0]
+        t_inf = (time.perf_counter() - start) * 1000  # ms
+
+        predictions.append((curr_time, pred))
+        inference_times.append(t_inf)
+
+        print(f"t={curr_time:.2f}s  eff={pred}  inference={t_inf:.3f}ms")
+
+        return pred, t_inf
+
+    return None, None
 
 np.random.seed(0)
 
@@ -89,7 +307,7 @@ print()
 #                                               t_final, stereo=stereo, vio=vio)
 # print(exit.value)
 
-N_RUNS = 500
+N_RUNS = 1
 
 def generate_thrust():
     r = random.random()
@@ -111,24 +329,29 @@ def generate_thrust():
 with open("imu_readings.csv", "w", newline='') as data_file:
     writer = csv.writer(data_file)
 
+    # Binary Model
+    # writer.writerow(['run_id', 'time', 'accelerometer_x', 'accelerometer_y', 'accelerometer_z', 'gyroscope_x', 'gyroscope_y', 'gyroscope_z', 'broken_index', 'thrust_scale', 'fault_active'])
+
     writer.writerow(
         ['run_id', 'time', 'accelerometer_x', 'accelerometer_y', 'accelerometer_z', 'gyroscope_x', 'gyroscope_y',
              'gyroscope_z', 'rotor0_eff', 'rotor1_eff', 'rotor2_eff', 'rotor3_eff'])
 
-    # writer.writerow(
-    #     ['run_id', 'time', 'accelerometer_x', 'accelerometer_y', 'accelerometer_z', 'gyroscope_x', 'gyroscope_y',
-    #      'gyroscope_z', 'fault_label'])
-
-    # writer.writerow(['run_id', 'time', 'accelerometer_x', 'accelerometer_y', 'accelerometer_z', 'gyroscope_x', 'gyroscope_y', 'gyroscope_z', 'broken_index', 'thrust_scale', 'fault_active'])
-    # for broken_index in [-1, 0, 1, 2, 3]:
-
     for run_id in range(N_RUNS):
+        # Binary Model
         # rotor_indices = [-1, 0, 1, 2, 3]
         # broken_index = random.choice(rotor_indices)
+        # thrust_scale = 1.0
+
         fault_active = random.choice([0, 1])
         thrust_scale = []
-        # thrust_scale = 1.0
         fault_profile = "normal"
+
+        # Binary Model
+        # if broken_index != -1:
+        #     thrust_scale = generate_thrust()
+        #     fault_profile = random.choice(["abrupt", "ramp", "intermittent"])
+        # else:
+        #     thrust_scale = random.uniform(0.85, 1.15)
 
         if fault_active == 1:
             for index in range(0, 4):
@@ -137,21 +360,14 @@ with open("imu_readings.csv", "w", newline='') as data_file:
         else:
             thrust_scale.extend([1.0] * 4)
 
-        # if broken_index != -1:
-        #     thrust_scale = generate_thrust()
-        #     fault_profile = random.choice(["abrupt", "ramp", "intermittent"])
-        # else:
-        #     thrust_scale = random.uniform(0.85, 1.15)
-
-        # thrust_scale = random.uniform(0.0, 1.0) if broken_index != -1 else 1
-
+        # Binary Model
         # fault_time = round(random.uniform(0.1 * t_final, 0.8 * t_final), 3) if broken_index != -1 else 100
 
         fault_time = round(random.uniform(0.1 * t_final, 0.8 * t_final), 3) if fault_active == 1 else 100
 
-        # print(broken_index, thrust_scale, fault_time)
-
         print('Simulate.')
+
+        # Binary Model
         # (sim_time, state, est_state, control, flat, exit, imu_measurements) = simulate(initial_state,
         #                                                                                quadrotor,
         #                                                                                my_se3_control,
@@ -161,6 +377,7 @@ with open("imu_readings.csv", "w", newline='') as data_file:
         #                                                                                thrust_scale=thrust_scale,
         #                                                                                fault_time=fault_time,
         #                                                                                fault_profile=fault_profile)
+
         (sim_time, state, est_state, control, flat, exit, imu_measurements) = simulate(initial_state,
                                                                                        quadrotor,
                                                                                        my_se3_control,
@@ -169,6 +386,7 @@ with open("imu_readings.csv", "w", newline='') as data_file:
                                                                                        thrust_scale=thrust_scale,
                                                                                        fault_time=fault_time,
                                                                                        fault_profile=fault_profile)
+
         print(exit.value)
 
         accelerometer_data = [imu[0] for imu in imu_measurements]
@@ -178,6 +396,9 @@ with open("imu_readings.csv", "w", newline='') as data_file:
                 accelerometer_x, accelerometer_y, accelerometer_z = accelerometer_data[i]
                 gyroscope_x, gyroscope_y, gyroscope_z = gyroscope_data[i]
                 time_stamp = sim_time[i]
+
+                imu = np.array([accelerometer_x, accelerometer_y, accelerometer_z, gyroscope_x, gyroscope_y, gyroscope_z], dtype=np.float32)
+                eff_pred, t_inf = process_imu_and_predict(time_stamp, imu)
 
                 writer.writerow([run_id,
                                 time_stamp,
@@ -192,7 +413,7 @@ with open("imu_readings.csv", "w", newline='') as data_file:
                                 1.0 if time_stamp < fault_time else thrust_scale[2],
                                 1.0 if time_stamp < fault_time else thrust_scale[3]])
 
-
+                # Binary Model
                 # writer.writerow([run_id,
                 #                 time_stamp,
                 #                 accelerometer_x,
@@ -201,49 +422,12 @@ with open("imu_readings.csv", "w", newline='') as data_file:
                 #                 gyroscope_x,
                 #                 gyroscope_y,
                 #                 gyroscope_z,
-                #                 0 if time_stamp < fault_time else (broken_index + 1)])
-                                # -1 if time_stamp < fault_time else broken_index,
-                                # 1 if time_stamp < fault_time else thrust_scale,
-                                # 0 if time_stamp < fault_time else 1])
+                #                 # 0 if time_stamp < fault_time else (broken_index + 1)])
+                #                 -1 if time_stamp < fault_time else broken_index,
+                #                 1 if time_stamp < fault_time else thrust_scale,
+                #                 0 if time_stamp < fault_time else 1])
 
-# print('Simulate.')
-# (sim_time, state, est_state, control, flat, exit, imu_measurements) = simulate(initial_state,
-#                                               quadrotor,
-#                                               my_se3_control,
-#                                               my_world_traj,
-#                                               t_final, stereo=stereo, vio=vio, broken_index=broken_index, thrust_scale=thrust_scale)
-# print(exit.value)
-
-
-# # Save sim data (IMU data) to csv file
-# accelerometer_data = [imu[0] for imu in imu_measurements]
-# gyroscope_data = [imu[1] for imu in imu_measurements]
-#
-# imu_readings_df = pd.DataFrame({
-#     'time': sim_time[:len(accelerometer_data)],
-#     'accelerometer_x': [a[0] for a in accelerometer_data],
-#     'accelerometer_y': [a[1] for a in accelerometer_data],
-#     'accelerometer_z': [a[2] for a in accelerometer_data],
-#     'gyroscope_x': [g[0] for g in gyroscope_data],
-#     'gyroscope_y': [g[1] for g in gyroscope_data],
-#     'gyroscope_z': [g[2] for g in gyroscope_data]
-# })
-#
-# imu_readings_df['broken_index'] = broken_index
-#
-# imu_readings_df.to_csv('imu_readings.csv', index=False)
-# print("IMU readings saved to file")
-#
-# # Save metadata for fault injection
-# sim_metadata = {
-#     "broken_index": broken_index,
-#     "thrust_scale": thrust_scale
-# }
-#
-# with open("metadata.json", "w") as metadata_dump:
-#     json.dump(sim_metadata, metadata_dump)
-
-# print(exit.value)
+# print(sum(inference_times) / len(inference_times))
 
 ###############VIO PLOTTING####################################
 # %% Gather results
