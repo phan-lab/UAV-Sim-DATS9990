@@ -336,12 +336,12 @@ class Quadrotor(object):
         #     thrust_noise_scale = 0.05 * (1.0 - eff_scale) * np.abs(rotor_thrusts[broken_index] + 1e-6)
         #     rotor_thrusts[broken_index] += np.random.normal(0.0, thrust_noise_scale)
 
-        # if curr_time >= fault_time:
-        #     for rotor_index, _ in enumerate(rotor_thrusts):
-        #         eff_scale = self.inject_fault(curr_time, fault_time, thrust_scale[rotor_index], fault_profile)
-        #         rotor_thrusts[rotor_index] *= eff_scale
-        #         thrust_noise_scale = 0.05 * (1.0 - eff_scale) * np.abs(rotor_thrusts[rotor_index] + 1e-6)
-        #         rotor_thrusts[rotor_index] += np.random.normal(0.0, thrust_noise_scale)
+        if curr_time >= fault_time:
+            for rotor_index, _ in enumerate(rotor_thrusts):
+                eff_scale = self.inject_fault(curr_time, fault_time, thrust_scale[rotor_index], fault_profile)
+                rotor_thrusts[rotor_index] *= eff_scale
+                thrust_noise_scale = 0.05 * (1.0 - eff_scale) * np.abs(rotor_thrusts[rotor_index] + 1e-6)
+                rotor_thrusts[rotor_index] += np.random.normal(0.0, thrust_noise_scale)
 
         TM = self.to_TM @ rotor_thrusts
 
