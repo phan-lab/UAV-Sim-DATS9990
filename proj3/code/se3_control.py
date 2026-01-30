@@ -36,7 +36,9 @@ class SE3Control(object):
         self.g = 9.81 # m/s^2
 
         # STUDENT CODE HERE
-
+        self.rotor_eff = np.ones(4)
+        self.fault_mode = False
+        self.fault_counter = 0
 
         # k_p_z = 7.5
         # k_d_z = 2 * np.sqrt(k_p_z) - 0.25
@@ -63,8 +65,8 @@ class SE3Control(object):
         k_R_rp = 250
         k_w_rp = 2 * np.sqrt(k_R_rp)
 
-        self.K_d = np.diag([k_p_xy, k_p_xy, k_d_z])
-        self.K_p = np.diag([k_d_xy, k_d_xy, k_p_z])
+        self.K_d = np.diag([k_d_xy, k_d_xy, k_d_z])
+        self.K_p = np.diag([k_p_xy, k_p_xy, k_p_z])
         self.K_R = np.diag([k_R_rp, k_R_rp, k_R_yaw])
         self.K_w = np.diag([k_w_rp, k_w_rp, k_w_yaw])
 
@@ -75,6 +77,40 @@ class SE3Control(object):
             [-self.arm_length, 0, self.arm_length, 0],
             [self.gamma, -self.gamma, self.gamma, -self.gamma]
         ])
+
+
+    def set_rotor_effectiveness(self, eta):
+        self.rotor_eff = 0.9 * self.rotor_eff + 0.1 * eta
+
+
+    def reset(self):
+        self.rotor_eff = np.ones(4)
+        self.fault_mode = False
+        self.fault_counter = 0
+
+
+    def safe_hover(self, state, flat_output):
+        r = state["x"]
+        r_dot = state["v"]
+        r_T = flat_output["x"]
+        r_dot_T = flat_output["x_dot"]
+        z_err = r[2] - r_T[2]
+        z_dot_err = r_dot[2] - r_dot_T[2]
+        u_1 = self.mass * (
+                self.g
+                - self.K_p[2, 2] * z_err
+                - self.K_d[2, 2] * z_dot_err
+        )
+        u_1 = np.clip(u_1, 0.5 * self.mass * self.g, 1.2 * self.mass * self.g)
+        total_eff = np.sum(self.rotor_eff)
+        total_eff = max(total_eff, 1e-3)
+        omega_hover = np.sqrt(
+            (u_1 / total_eff) / self.k_thrust
+        )
+        cmd_motor_speeds = np.ones(4) * omega_hover
+        cmd_motor_speeds = np.clip(cmd_motor_speeds, self.rotor_speed_min, self.rotor_speed_max)
+        return cmd_motor_speeds
+
 
     def update(self, t, state, flat_output):
         """
@@ -127,7 +163,14 @@ class SE3Control(object):
         R = Rotation.from_quat(quaternion).as_matrix()
         b_3 = R[:, 2]
 
-        r_ddot_des = r_ddot_T - self.K_d @ (r_dot-r_dot_T) - self.K_p @ (r-r_T)
+        if np.min(self.rotor_eff) < 0.3:
+            cmd_motor_speeds = self.safe_hover(state, flat_output)
+            return {'cmd_motor_speeds': cmd_motor_speeds,
+                         'cmd_thrust': 0,
+                         'cmd_moment': np.zeros(3),
+                         'cmd_q': np.zeros(4)}
+
+        r_ddot_des = r_ddot_T - self.K_d @ (r_dot - r_dot_T) - self.K_p @ (r - r_T)
         F_des = self.mass * r_ddot_des + np.array([0, 0, self.mass * self.g])
         u_1 = b_3 @ F_des
 
@@ -138,12 +181,12 @@ class SE3Control(object):
         R_des = np.column_stack((b_1_des, b_2_des, b_3_des))
 
         e_R = 0.5 * (R_des.T @ R - R.T @ R_des)
-        e_R = np.array([e_R[2,1], e_R[0,2], e_R[1,0]])
+        e_R = np.array([e_R[2, 1], e_R[0, 2], e_R[1, 0]])
 
         e_w = w
         u_2 = self.inertia @ (- self.K_R @ e_R - self.K_w @ e_w)
 
-        u_vector = np.insert(u_2,0, u_1)
+        u_vector = np.insert(u_2, 0, u_1)
         F_vector = np.linalg.solve(self.u_F, u_vector)
 
         F_vector = F_vector.clip(min=0)

@@ -8,6 +8,8 @@ from numpy.linalg import inv, norm
 import scipy.integrate
 from scipy.spatial.transform import Rotation
 import matplotlib.pyplot as plt
+from collections import deque
+from proj3.code.ml_models import process_imu_and_predict
 
 
 class ExitStatus(Enum):
@@ -22,6 +24,9 @@ class ExitStatus(Enum):
 
 # Binary Model
 # def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminate=None, vio=None, stereo=None, broken_index=-1, thrust_scale=1.0, fault_time=0.0, fault_profile="normal"):
+
+WINDOW_LEN = 100
+imu_buffer = deque(maxlen=WINDOW_LEN)
 
 def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminate=None, vio=None, stereo=None, thrust_scale=None, fault_time=0.0, fault_profile="normal"):
     """
@@ -103,8 +108,8 @@ def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminat
         stereo.sample_features()
 
     while True:
-        # exit_status = exit_status or safety_exit(state[-1], flat[-1], control[-1])
-        # exit_status = exit_status or normal_exit(time[-1], state[-1])
+        exit_status = exit_status or safety_exit(state[-1], flat[-1], control[-1])
+        exit_status = exit_status or normal_exit(time[-1], state[-1])
         exit_status = exit_status or time_exit(time[-1], t_final)
         if exit_status:
             break
@@ -123,6 +128,18 @@ def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminat
                 images_feature.append(image_feature.T)
             imu_measurements.append(imu_measurement)
             vio_state.append(state_estimated)
+
+            # Tune controller using model predictions
+            accelerometer, gyroscope = imu_measurements[-1]
+            imu_sample = np.array([
+                accelerometer[0], accelerometer[1], accelerometer[2],
+                gyroscope[0], gyroscope[1], gyroscope[2]
+            ], dtype=np.float32)
+
+            eff_pred, t_inf = process_imu_and_predict(time[-1], imu_sample)
+            if eff_pred is not None:
+                controller.set_rotor_effectiveness(eff_pred)
+
             control.append(sanitize_control_dic(controller.update(time[-1], vio_state[-1], flat[-1])))
         else:
             control.append(sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1])))
