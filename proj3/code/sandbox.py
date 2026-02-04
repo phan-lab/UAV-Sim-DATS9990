@@ -172,6 +172,9 @@ with open("imu_readings.csv", "w", newline='') as data_file:
 
         print(exit.value)
 
+        if exit.value == ExitStatus.EMERGENCY_LAND.value:
+            continue
+
         accelerometer_data = [imu[0] for imu in imu_measurements]
         gyroscope_data = [imu[1] for imu in imu_measurements]
 
@@ -251,14 +254,14 @@ for (i, p) in enumerate(vio.pose):
 # Print results.
 #
 # Only goal reached, collision test, and flight time are used for grading.
-collision_pts = world.path_collisions(state['x'], robot_radius)
+if exit.value != ExitStatus.EMERGENCY_LAND.value:
+    collision_pts = world.path_collisions(state['x'], robot_radius)
 
+    # increase the goal reached tolerance for VIO noisy state estimation and accumulated drift
+    goal_tolerance = 2
+    stopped_at_goal = (exit == ExitStatus.COMPLETE) and np.linalg.norm(state['x'][-1] - goal) <= goal_tolerance
 
-# increase the goal reached tolerance for VIO noisy state estimation and accumulated drift
-goal_tolerance = 2
-stopped_at_goal = (exit == ExitStatus.COMPLETE) and np.linalg.norm(state['x'][-1] - goal) <= goal_tolerance
-
-no_collision = collision_pts.size == 0
-flight_time = sim_time[-1]
-flight_distance = np.sum(np.linalg.norm(np.diff(state['x'], axis=0),axis=1))
-planning_time = planning_end_time - planning_start_time
+    no_collision = collision_pts.size == 0
+    flight_time = sim_time[-1]
+    flight_distance = np.sum(np.linalg.norm(np.diff(state['x'], axis=0),axis=1))
+    planning_time = planning_end_time - planning_start_time

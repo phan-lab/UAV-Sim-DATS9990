@@ -37,8 +37,8 @@ class SE3Control(object):
 
         # STUDENT CODE HERE
         self.rotor_eff = np.ones(4)
-        self.fault_mode = False
         self.fault_counter = 0
+        self.emergency_active = False
 
         # k_p_z = 7.5
         # k_d_z = 2 * np.sqrt(k_p_z) - 0.25
@@ -85,8 +85,8 @@ class SE3Control(object):
 
     def reset(self):
         self.rotor_eff = np.ones(4)
-        self.fault_mode = False
         self.fault_counter = 0
+        self.emergency_active = False
 
 
     def safe_hover(self, state, flat_output):
@@ -110,6 +110,10 @@ class SE3Control(object):
         cmd_motor_speeds = np.ones(4) * omega_hover
         cmd_motor_speeds = np.clip(cmd_motor_speeds, self.rotor_speed_min, self.rotor_speed_max)
         return cmd_motor_speeds
+
+
+    def emergency_land(self, state):
+        return np.zeros(4)
 
 
     def update(self, t, state, flat_output):
@@ -163,12 +167,17 @@ class SE3Control(object):
         R = Rotation.from_quat(quaternion).as_matrix()
         b_3 = R[:, 2]
 
+        if self.emergency_active:
+            raise RuntimeError("EMERGENCY_LANDING")
+
         if np.min(self.rotor_eff) < 0.3:
-            cmd_motor_speeds = self.safe_hover(state, flat_output)
-            return {'cmd_motor_speeds': cmd_motor_speeds,
-                         'cmd_thrust': 0,
-                         'cmd_moment': np.zeros(3),
-                         'cmd_q': np.zeros(4)}
+            self.fault_counter += 1
+        else:
+            self.fault_counter = 0
+
+        if self.fault_counter >= 20:
+            self.emergency_active = True
+            raise RuntimeError("EMERGENCY_LANDING")
 
         r_ddot_des = r_ddot_T - self.K_d @ (r_dot - r_dot_T) - self.K_p @ (r - r_T)
         F_des = self.mass * r_ddot_des + np.array([0, 0, self.mass * self.g])

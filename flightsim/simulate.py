@@ -21,6 +21,7 @@ class ExitStatus(Enum):
     OVER_SPEED = 'Failure: Your quadrotor is out of control; it is going faster than 100 m/s. The Guinness World Speed Record is 73 m/s.'
     OVER_SPIN = 'Failure: Your quadrotor is out of control; it is spinning faster than 100 rad/s. The onboard IMU can only measure up to 52 rad/s (3000 deg/s).'
     FLY_AWAY = 'Failure: Your quadrotor is out of control; it flew away with a position error greater than 20 meters.'
+    EMERGENCY_LAND = 'Emergency: Landed the quadrotor due to unrecoverable rotor faults.'
 
 # Binary Model
 # def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminate=None, vio=None, stereo=None, broken_index=-1, thrust_scale=1.0, fault_time=0.0, fault_profile="normal"):
@@ -94,7 +95,12 @@ def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminat
     imu_measurements = []
     vio_state = [copy.deepcopy(initial_state)]
     flat = [sanitize_trajectory_dic(trajectory.update(time[-1]))]
-    control = [sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1]))]
+
+    try:
+        control = [sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1]))]
+    except RuntimeError:
+        exit_status = ExitStatus.EMERGENCY_LAND
+        return (time, state, vio_state, None, flat, exit_status, imu_measurements)
 
     exit_status = None
 
@@ -140,9 +146,17 @@ def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminat
             if eff_pred is not None:
                 controller.set_rotor_effectiveness(eff_pred)
 
-            control.append(sanitize_control_dic(controller.update(time[-1], vio_state[-1], flat[-1])))
+            try:
+                control.append(sanitize_control_dic(controller.update(time[-1], vio_state[-1], flat[-1])))
+            except RuntimeError:
+                exit_status = ExitStatus.EMERGENCY_LAND
+                return time, state, vio_state, None, flat, exit_status, imu_measurements
         else:
-            control.append(sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1])))
+            try:
+                control.append(sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1])))
+            except RuntimeError:
+                exit_status = ExitStatus.EMERGENCY_LAND
+                return time, state, vio_state, None, flat, exit_status, imu_measurements
 
     time = np.array(time, dtype=float)
     state = merge_dicts(state)
