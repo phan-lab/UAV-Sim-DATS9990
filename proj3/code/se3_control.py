@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+
 class SE3Control(object):
     """
 
@@ -37,8 +38,15 @@ class SE3Control(object):
 
         # STUDENT CODE HERE
         self.rotor_eff = np.ones(4)
-        self.fault_counter = 0
-        self.emergency_active = False
+        self.baseline_eff = np.ones(4)
+        self.baseline_count = 0
+        self.BASELINE_TIME = 2.0
+        self.unrecoverable_counter = 0
+        self.degraded_counter = 0
+        self.eff_history = np.zeros((50, 4))
+        self.hist_idx = 0
+        self.mode = "NOMINAL"
+        self.degraded_start_time = None
 
         # k_p_z = 7.5
         # k_d_z = 2 * np.sqrt(k_p_z) - 0.25
@@ -81,39 +89,134 @@ class SE3Control(object):
 
     def set_rotor_effectiveness(self, eta):
         self.rotor_eff = 0.9 * self.rotor_eff + 0.1 * eta
+        self.eff_history[self.hist_idx % 50] = self.rotor_eff
+        self.hist_idx += 1
+
+
+    def update_baseline(self, t):
+        if t < self.BASELINE_TIME:
+            self.baseline_eff = (
+                self.baseline_eff * self.baseline_count + self.rotor_eff
+            ) / (self.baseline_count + 1)
+            self.baseline_count += 1
+
+
+    def detect_mode(self, t):
+        residual = self.rotor_eff / (self.baseline_eff + 1e-6)
+        min_residual = np.min(residual)
+        asym = np.max(residual) - np.min(residual)
+
+        degraded = (
+            t > self.BASELINE_TIME and
+            min_residual < 0.8 and
+            asym > 0.2
+        )
+
+        unrecoverable = (
+            t > self.BASELINE_TIME and
+            min_residual < 0.5
+        )
+
+        return degraded, unrecoverable
+
+
+    def update_counters(self, degraded, unrecoverable):
+        if degraded:
+            self.degraded_counter += 1
+        else:
+            self.degraded_counter = max(self.degraded_counter - 1, 0)
+
+        if unrecoverable:
+            self.unrecoverable_counter += 1
+        else:
+            self.unrecoverable_counter = max(self.unrecoverable_counter - 1, 0)
+
+
+    def update_mode(self, t):
+        if self.mode == "NOMINAL":
+            if self.unrecoverable_counter >= 20:
+                self.mode = "UNRECOVERABLE"
+            elif self.degraded_counter >= 20:
+                self.mode = "DEGRADED"
+                if self.degraded_start_time is None:
+                    self.degraded_start_time = t
+        elif self.mode == "DEGRADED":
+            if self.unrecoverable_counter >= 20:
+                self.mode = "UNRECOVERABLE"
+            # elif self.degraded_counter == 0:
+            #     self.mode = "NOMINAL"
 
 
     def reset(self):
         self.rotor_eff = np.ones(4)
-        self.fault_counter = 0
-        self.emergency_active = False
+        self.baseline_eff = np.ones(4)
+        self.baseline_count = 0
+        self.unrecoverable_counter = 0
+        self.degraded_counter = 0
+        self.eff_history = np.zeros((50, 4))
+        self.hist_idx = 0
+        self.mode = "NOMINAL"
+        self.degraded_start_time = None
 
 
-    def safe_hover(self, state, flat_output):
+    def degraded_control(self, t, state):
         r = state["x"]
         r_dot = state["v"]
-        r_T = flat_output["x"]
-        r_dot_T = flat_output["x_dot"]
-        z_err = r[2] - r_T[2]
-        z_dot_err = r_dot[2] - r_dot_T[2]
-        u_1 = self.mass * (
-                self.g
-                - self.K_p[2, 2] * z_err
-                - self.K_d[2, 2] * z_dot_err
+        q = state["q"]
+        w = state["w"]
+
+        if r[2] < 0.1:
+            raise RuntimeError("DEGRADED_SAFE_LANDING")
+
+        R = Rotation.from_quat(q).as_matrix()
+        b3 = R[:, 2]
+
+        t_degraded = t - self.degraded_start_time
+        z_ref = max(0.0, r[2] - 0.3 * max(0.0, t_degraded - 1.0))
+
+        z_err = r[2] - z_ref
+        z_dot_err = r_dot[2]
+
+        u1 = self.mass * (
+            self.g
+            - self.K_p[2, 2] * z_err
+            - self.K_d[2, 2] * z_dot_err
         )
-        u_1 = np.clip(u_1, 0.5 * self.mass * self.g, 1.2 * self.mass * self.g)
-        total_eff = np.sum(self.rotor_eff)
-        total_eff = max(total_eff, 1e-3)
-        omega_hover = np.sqrt(
-            (u_1 / total_eff) / self.k_thrust
+        u1 = np.clip(
+            u1,
+            0.6 * self.mass * self.g,
+            1.1 * self.mass * self.g
         )
-        cmd_motor_speeds = np.ones(4) * omega_hover
-        cmd_motor_speeds = np.clip(cmd_motor_speeds, self.rotor_speed_min, self.rotor_speed_max)
+
+        R_des = np.eye(3)
+        e_R_mat = 0.5 * (R_des.T @ R - R.T @ R_des)
+        e_R = np.array([
+            e_R_mat[2, 1],
+            e_R_mat[0, 2],
+            e_R_mat[1, 0]
+        ])
+
+        e_w = w
+        tau = self.inertia @ (
+            - self.K_R @ e_R
+            - self.K_w @ e_w
+        )
+        tau[2] = 0.0
+
+        u = np.array([u1, tau[0], tau[1], 0.0])
+
+        E_eff = self.u_F @ np.diag(self.rotor_eff)
+        F = np.linalg.pinv(E_eff) @ u
+        F = np.clip(F, 0.0, None)
+
+        cmd_motor_speeds = np.sqrt(F / self.k_thrust)
+        cmd_motor_speeds = np.clip(
+            cmd_motor_speeds,
+            self.rotor_speed_min,
+            self.rotor_speed_max
+        )
+
         return cmd_motor_speeds
-
-
-    def emergency_land(self, state):
-        return np.zeros(4)
 
 
     def update(self, t, state, flat_output):
@@ -167,17 +270,26 @@ class SE3Control(object):
         R = Rotation.from_quat(quaternion).as_matrix()
         b_3 = R[:, 2]
 
-        if self.emergency_active:
+        # print(f"Timestamp {t:.3f}, Predictions: {self.rotor_eff}")
+
+        self.update_baseline(t)
+
+        degraded, unrecoverable = self.detect_mode(t)
+        self.update_counters(degraded, unrecoverable)
+        self.update_mode(t)
+
+        # UAV cannot be recovered, initiate emergency landing
+        if self.mode == "UNRECOVERABLE":
             raise RuntimeError("EMERGENCY_LANDING")
 
-        if np.min(self.rotor_eff) < 0.3:
-            self.fault_counter += 1
-        else:
-            self.fault_counter = 0
-
-        if self.fault_counter >= 20:
-            self.emergency_active = True
-            raise RuntimeError("EMERGENCY_LANDING")
+        if self.mode == "DEGRADED":
+            cmd_motor_speeds = self.degraded_control(t, state)
+            return {
+                'cmd_motor_speeds': cmd_motor_speeds,
+                'cmd_thrust': 0,
+                'cmd_moment': np.zeros(3),
+                'cmd_q': np.zeros(4)
+            }, self.mode
 
         r_ddot_des = r_ddot_T - self.K_d @ (r_dot - r_dot_T) - self.K_p @ (r - r_T)
         F_des = self.mass * r_ddot_des + np.array([0, 0, self.mass * self.g])
@@ -207,4 +319,4 @@ class SE3Control(object):
                          'cmd_thrust':cmd_thrust,
                          'cmd_moment':cmd_moment,
                          'cmd_q':cmd_q}
-        return control_input
+        return control_input, self.mode

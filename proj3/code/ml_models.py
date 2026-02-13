@@ -177,7 +177,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Regression model - Unidirectional
 model = RotorEffectivenessPredictor2().to(DEVICE)
-model.load_state_dict(torch.load("best_model2.pt", map_location=DEVICE))
+model.load_state_dict(torch.load("best_model-new_dist.pt", map_location=DEVICE))
 model.eval()
 
 # Binary model

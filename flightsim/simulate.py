@@ -21,6 +21,7 @@ class ExitStatus(Enum):
     OVER_SPEED = 'Failure: Your quadrotor is out of control; it is going faster than 100 m/s. The Guinness World Speed Record is 73 m/s.'
     OVER_SPIN = 'Failure: Your quadrotor is out of control; it is spinning faster than 100 rad/s. The onboard IMU can only measure up to 52 rad/s (3000 deg/s).'
     FLY_AWAY = 'Failure: Your quadrotor is out of control; it flew away with a position error greater than 20 meters.'
+    DEGRADED_SAFE_LAND = 'Partially degraded: Landed the quadrotor safely due to partial rotor faults.'
     EMERGENCY_LAND = 'Emergency: Landed the quadrotor due to unrecoverable rotor faults.'
 
 # Binary Model
@@ -97,10 +98,15 @@ def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminat
     flat = [sanitize_trajectory_dic(trajectory.update(time[-1]))]
 
     try:
-        control = [sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1]))]
-    except RuntimeError:
-        exit_status = ExitStatus.EMERGENCY_LAND
-        return (time, state, vio_state, None, flat, exit_status, imu_measurements)
+        control_dict, mode = controller.update(time[-1], state[-1], flat[-1])
+        control = [sanitize_control_dic(control_dict)]
+        # control = sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1]))
+    except RuntimeError as quad_status:
+        if str(quad_status) == 'DEGRADED_SAFE_LANDING':
+            exit_status = ExitStatus.DEGRADED_SAFE_LAND
+        elif str(quad_status) == 'EMERGENCY_LANDING':
+            exit_status = ExitStatus.EMERGENCY_LAND
+        return time, state, vio_state, None, flat, exit_status, imu_measurements
 
     exit_status = None
 
@@ -114,7 +120,7 @@ def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminat
         stereo.sample_features()
 
     while True:
-        exit_status = exit_status or safety_exit(state[-1], flat[-1], control[-1])
+        exit_status = exit_status or safety_exit(state[-1], flat[-1], control[-1], mode)
         exit_status = exit_status or normal_exit(time[-1], state[-1])
         exit_status = exit_status or time_exit(time[-1], t_final)
         if exit_status:
@@ -147,15 +153,25 @@ def simulate(initial_state, quadrotor, controller, trajectory, t_final, terminat
                 controller.set_rotor_effectiveness(eff_pred)
 
             try:
-                control.append(sanitize_control_dic(controller.update(time[-1], vio_state[-1], flat[-1])))
-            except RuntimeError:
-                exit_status = ExitStatus.EMERGENCY_LAND
+                control_dict, mode = controller.update(time[-1], vio_state[-1], flat[-1])
+                control.append(sanitize_control_dic(control_dict))
+                # control.append(sanitize_control_dic(controller.update(time[-1], vio_state[-1], flat[-1])))
+            except RuntimeError as quad_status:
+                if str(quad_status) == 'DEGRADED_SAFE_LANDING':
+                    exit_status = ExitStatus.DEGRADED_SAFE_LAND
+                elif str(quad_status) == 'EMERGENCY_LANDING':
+                    exit_status = ExitStatus.EMERGENCY_LAND
                 return time, state, vio_state, None, flat, exit_status, imu_measurements
         else:
             try:
-                control.append(sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1])))
-            except RuntimeError:
-                exit_status = ExitStatus.EMERGENCY_LAND
+                control_dict, mode = controller.update(time[-1], state[-1], flat[-1])
+                control.append(sanitize_control_dic(control_dict))
+                # control.append(sanitize_control_dic(controller.update(time[-1], state[-1], flat[-1])))
+            except RuntimeError as quad_status:
+                if str(quad_status) == 'DEGRADED_SAFE_LANDING':
+                    exit_status = ExitStatus.DEGRADED_SAFE_LAND
+                elif str(quad_status) == 'EMERGENCY_LANDING':
+                    exit_status = ExitStatus.EMERGENCY_LAND
                 return time, state, vio_state, None, flat, exit_status, imu_measurements
 
     time = np.array(time, dtype=float)
@@ -252,10 +268,14 @@ def time_exit(time, t_final):
     return None
 
 
-def safety_exit(state, flat, control):
+def safety_exit(state, flat, control, mode):
     """
     Return exit status if any safety condition is violated, otherwise None.
     """
+    if mode == "DEGRADED":
+        # print("skipped checks")
+        return None
+
     if np.any(np.isinf(control['cmd_motor_speeds'])):
         return ExitStatus.INF_VALUE
     if np.any(np.isnan(control['cmd_motor_speeds'])):

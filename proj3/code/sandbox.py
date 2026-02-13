@@ -76,19 +76,20 @@ print()
 #                                               t_final, stereo=stereo, vio=vio)
 # print(exit.value)
 
-N_RUNS = 10
+N_RUNS = 15
 
 def generate_thrust():
     r = random.random()
-    if r < 0.5:
-        randomized_thrust = random.uniform(0.0, 0.25)
-    elif r < 0.8:
-        randomized_thrust = random.uniform(0.25, 0.6)
+    if r < 0.65:
+        randomized_thrust = random.uniform(0.95, 1.0)
+    elif r < 0.9:
+        randomized_thrust = random.uniform(0.65, 0.85)
     else:
-        randomized_thrust = random.uniform(0.6, 1.0)
-    # randomized_thrust = random.uniform(0.0, 0.3)
-    # return random.uniform(0.05, 0.25)
+        randomized_thrust = random.uniform(0.3, 0.5)
+    # # randomized_thrust = random.uniform(0.0, 0.3)
+    # # return random.uniform(0.05, 0.25)
     return randomized_thrust
+    # return random.uniform(0.3, 0.7)
 
 # rotor_indices = [-1, 0, 1, 2, 3]
 # broken_index = random.choice(rotor_indices)
@@ -125,6 +126,7 @@ with open("imu_readings.csv", "w", newline='') as data_file:
         # thrust_scale = 1.0
 
         fault_active = random.choice([0, 1])
+        # fault_active = 0
         thrust_scale = []
         fault_profile = "normal"
 
@@ -172,7 +174,7 @@ with open("imu_readings.csv", "w", newline='') as data_file:
 
         print(exit.value)
 
-        if exit.value == ExitStatus.EMERGENCY_LAND.value:
+        if exit.value in (ExitStatus.DEGRADED_SAFE_LAND.value, ExitStatus.EMERGENCY_LAND.value):
             continue
 
         accelerometer_data = [imu[0] for imu in imu_measurements]
@@ -224,8 +226,8 @@ with open("imu_readings.csv", "w", newline='') as data_file:
         flight_distance = np.sum(np.linalg.norm(np.diff(state['x'], axis=0), axis=1))
         planning_time = planning_end_time - planning_start_time
 
-        # print()
-        # print(f"Results:")
+        print()
+        print(f"Results:")
         print("Run result")
         print(f"  No Collision:    {'pass' if no_collision else 'FAIL'}")
         print(f"  Stopped at Goal: {'pass' if stopped_at_goal else 'FAIL'}")
@@ -254,7 +256,7 @@ for (i, p) in enumerate(vio.pose):
 # Print results.
 #
 # Only goal reached, collision test, and flight time are used for grading.
-if exit.value != ExitStatus.EMERGENCY_LAND.value:
+if exit.value not in (ExitStatus.DEGRADED_SAFE_LAND.value, ExitStatus.EMERGENCY_LAND.value):
     collision_pts = world.path_collisions(state['x'], robot_radius)
 
     # increase the goal reached tolerance for VIO noisy state estimation and accumulated drift
