@@ -1,15 +1,19 @@
 ## Setup
 
+Create a virtual environment and activate it
+
+``
+python3 -m venv venv
+``
+
+``
+source venv/bin/activate
+``
+
 To install the required packages, run setup.py
 
 ``
 python3 setup.py
-``
-
-Once the dependencies are installed, activate the virtual environment
-
-``
-source venv/bin/activate
 ``
 
 ## Running the Simulator
