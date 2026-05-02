@@ -76,7 +76,7 @@ print()
 #                                               t_final, stereo=stereo, vio=vio)
 # print(exit.value)
 
-N_RUNS = 15
+N_RUNS = 10
 
 def generate_thrust():
     r = random.random()
@@ -233,7 +233,7 @@ with open("imu_readings.csv", "w", newline='') as data_file:
         print(f"  Stopped at Goal: {'pass' if stopped_at_goal else 'FAIL'}")
         print(f"  Flight time:     {flight_time:.1f} seconds")
         print(f"  Flight distance: {flight_distance:.1f} meters")
-# print(sum(inference_times) / len(inference_times))
+        # print(sum(inference_times) / len(inference_times))
 
 ###############VIO PLOTTING####################################
 # %% Gather results

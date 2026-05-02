@@ -20,4 +20,5 @@ setup(
             'numpy',
             'pandas',
             'scipy',
-            'timeout_decorator'])
+            'timeout_decorator',
+            'torch'])
